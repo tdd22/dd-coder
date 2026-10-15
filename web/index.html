@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dd-coder</title>
+  <style>
+    :root {
+      --ink: #1d1d1f;
+      --muted: #8a8f98;
+      --line: #e6e8ee;
+      --sidebar: #f7f8fa;
+      --accent: #4d6bfe;
+      --accent-soft: #eef1ff;
+      --user: #f4f6fb;
+      --page: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--page);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    button, textarea { font: inherit; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      height: 100%;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      padding: 16px 12px 12px;
+      border-right: 1px solid var(--line);
+      background: var(--sidebar);
+      overflow: hidden;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 8px 2px;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 9px;
+      background: var(--accent);
+      color: white;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 650;
+    }
+
+    button.new-session {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      width: 100%;
+      height: 40px;
+      padding: 0 14px;
+      border: 1px solid #e6e8ee;
+      border-radius: 20px;
+      background: white;
+      color: var(--ink);
+      font-weight: 500;
+      box-shadow: 0 1px 2px rgba(28, 39, 68, 0.04);
+      cursor: pointer;
+    }
+
+    button.new-session:hover { background: #f3f4f6; }
+
+    #sessions {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 2px;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    button.session {
+      width: 100%;
+      height: auto;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--ink);
+      font-weight: 450;
+      text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+    }
+
+    button.session:hover { background: #eceef3; }
+
+    button.session.active {
+      background: #e7ebf6;
+      font-weight: 600;
+    }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      background: var(--page);
+    }
+
+    #thread {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .column {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      width: min(800px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    .hero {
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      text-align: center;
+    }
+
+    .hero[hidden] { display: none; }
+
+    .hero .mark {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      font-size: 20px;
+    }
+
+    .hero h2 {
+      margin: 0;
+      font-size: 28px;
+      font-weight: 620;
+      letter-spacing: -0.03em;
+    }
+
+    #history {
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+      padding: 28px 0 12px;
+    }
+
+    .bubble {
+      max-width: 100%;
+      white-space: pre-wrap;
+      line-height: 1.75;
+      font-size: 16px;
+    }
+
+    .bubble.user {
+      align-self: flex-end;
+      max-width: min(78%, 640px);
+      padding: 10px 16px;
+      border-radius: 16px;
+      background: var(--user);
+    }
+
+    .bubble.assistant { align-self: stretch; }
+
+    .bubble p { margin: 0; }
+
+    #reply,
+    #route,
+    #stop,
+    #events {
+      width: min(800px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    #reply {
+      padding-bottom: 8px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    #reply[hidden] { display: none; }
+
+    #route,
+    #stop {
+      margin: 0 auto 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    #events {
+      margin: 0 auto 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: #f6f7f9;
+      color: #5c6370;
+      white-space: pre-wrap;
+      line-height: 1.5;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    .dock {
+      width: min(800px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 8px 0 22px;
+    }
+
+    #pending {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 12px;
+      padding: 12px 14px;
+      border: 1px solid #d9e1ff;
+      border-radius: 16px;
+      background: var(--accent-soft);
+    }
+
+    #pending[hidden] { display: none; }
+
+    #pending p {
+      margin: 0;
+      line-height: 1.5;
+    }
+
+    .pending-actions { display: flex; gap: 8px; }
+
+    #allow,
+    #reject {
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    #allow {
+      border: 0;
+      background: var(--accent);
+      color: white;
+    }
+
+    #reject {
+      border: 1px solid var(--line);
+      background: white;
+      color: var(--ink);
+    }
+
+    #composer {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 10px 10px 10px 18px;
+      border: 1px solid #e4e6eb;
+      border-radius: 24px;
+      background: white;
+      box-shadow: 0 8px 24px rgba(28, 39, 68, 0.06);
+    }
+
+    textarea {
+      flex: 1;
+      width: 100%;
+      max-height: 180px;
+      min-height: 28px;
+      resize: none;
+      padding: 8px 0;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      line-height: 1.5;
+    }
+
+    textarea:focus { outline: none; }
+
+    #send {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      flex: 0 0 auto;
+      padding: 0;
+      border: 0;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    #send:hover { background: #3d5bf0; }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 220px minmax(0, 1fr); }
+      .column, #reply, #route, #stop, #events, .dock { width: calc(100% - 28px); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="mark">dd</span>
+        <h1>dd-coder</h1>
+      </div>
+      <button id="new-session" class="new-session" type="button">+ 开启新对话</button>
+      <div id="sessions"></div>
+    </aside>
+    <main class="main">
+      <div id="thread">
+        <div class="column">
+          <div id="empty" class="hero">
+            <span class="mark">dd</span>
+            <h2>今天有什么可以帮你？</h2>
+          </div>
+          <div id="history"></div>
+        </div>
+        <div id="reply" hidden></div>
+        <p id="route" hidden></p>
+        <p id="stop" hidden></p>
+        <pre id="events" hidden></pre>
+      </div>
+      <div class="dock">
+        <div id="pending" hidden>
+          <p id="pending-reason"></p>
+          <div class="pending-actions">
+            <button id="allow" type="button">同意</button>
+            <button id="reject" type="button">拒绝</button>
+          </div>
+        </div>
+        <form id="composer">
+          <textarea id="message" rows="1" placeholder="给 dd-coder 发送消息"></textarea>
+          <button id="send" type="submit" aria-label="发送">↑</button>
+        </form>
+      </div>
+    </main>
+  </div>
+  <script>
+    const composer = document.querySelector("#composer");
+    const send = document.querySelector("#send");
+    const message = document.querySelector("#message");
+    const reply = document.querySelector("#reply");
+    const route = document.querySelector("#route");
+    const events = document.querySelector("#events");
+    const stop = document.querySelector("#stop");
+    const history = document.querySelector("#history");
+    const sessions = document.querySelector("#sessions");
+    const newSession = document.querySelector("#new-session");
+    const empty = document.querySelector("#empty");
+    const thread = document.querySelector("#thread");
+    let threadId = sessionStorage.getItem("threadId") || "default";
+    const pendingBox = document.querySelector("#pending");
+    const pendingReason = document.querySelector("#pending-reason");
+    const allow = document.querySelector("#allow");
+    const reject = document.querySelector("#reject");
+    let waiting = false;
+    let sending = false;
+
+    function scrollThread() {
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    function showRoute(data) {
+      const tier = data.model_tier || "";
+      const name = data.model_name || "";
+      if (!tier && !name) {
+        route.hidden = true;
+        route.textContent = "";
+        return;
+      }
+      route.hidden = false;
+      route.textContent = name ? "模型：" + tier + " · " + name : "模型：" + tier;
+    }
+
+    function showResult(data) {
+      showRoute(data);
+      if (data.pending) {
+        waiting = true;
+        pendingBox.hidden = false;
+        pendingReason.textContent = data.pending.reason + "（" + data.pending.rule_id + "）";
+        reply.hidden = false;
+        reply.textContent = "等待你的决定";
+        events.hidden = true;
+        stop.hidden = true;
+        scrollThread();
+        return;
+      }
+      waiting = false;
+      pendingBox.hidden = true;
+      pendingReason.textContent = "";
+      reply.hidden = true;
+      reply.textContent = "";
+      if (data.stop_reason && data.stop_reason !== "final_answer") {
+        stop.hidden = false;
+        stop.textContent = "循环停止：" + data.stop_reason;
+      } else {
+        stop.hidden = true;
+        stop.textContent = "";
+      }
+      const trace = (data.events || []).join("\n\n");
+      events.hidden = !trace;
+      events.textContent = trace;
+      scrollThread();
+    }
+
+    function setThread(id) {
+      threadId = id;
+      sessionStorage.setItem("threadId", id);
+    }
+
+    function clearReply() {
+      reply.hidden = true;
+      reply.textContent = "";
+      route.hidden = true;
+      route.textContent = "";
+      events.hidden = true;
+      stop.hidden = true;
+      pendingBox.hidden = true;
+      pendingReason.textContent = "";
+    }
+
+    async function loadSessions() {
+      const response = await fetch("/sessions");
+      const items = await response.json();
+      if (!items.some((item) => item.id === threadId)) {
+        items.push({ id: threadId, title: "新会话" });
+        items.sort((a, b) => a.id.localeCompare(b.id));
+      }
+      sessions.replaceChildren();
+      for (const item of items) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "session" + (item.id === threadId ? " active" : "");
+        button.textContent = item.title;
+        button.disabled = waiting || sending;
+        button.addEventListener("click", () => selectSession(item.id));
+        sessions.append(button);
+      }
+    }
+
+    async function selectSession(id) {
+      if (waiting || sending || id === threadId) return;
+      setThread(id);
+      clearReply();
+      await loadSessions();
+      await loadHistory();
+    }
+
+    async function loadHistory() {
+      const response = await fetch("/history?thread_id=" + encodeURIComponent(threadId));
+      const messages = await response.json();
+      history.replaceChildren();
+      empty.hidden = messages.length > 0;
+      for (const item of messages) {
+        const block = document.createElement("article");
+        block.className = "bubble " + (item.role === "user" ? "user" : "assistant");
+        const text = document.createElement("p");
+        text.textContent = item.content;
+        block.append(text);
+        history.append(block);
+      }
+      scrollThread();
+    }
+
+    composer.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (waiting || sending) return;
+      const text = message.value.trim();
+      if (!text) return;
+      sending = true;
+      send.disabled = true;
+      newSession.disabled = true;
+      empty.hidden = true;
+      reply.hidden = false;
+      reply.textContent = "正在回复...";
+      route.hidden = true;
+      route.textContent = "";
+      events.hidden = true;
+      stop.hidden = true;
+      scrollThread();
+      try {
+        const response = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text, thread_id: threadId }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          reply.hidden = false;
+          reply.textContent = "请求失败";
+          route.hidden = true;
+          route.textContent = "";
+          waiting = false;
+          return;
+        }
+        message.value = "";
+        showResult(data);
+        await loadHistory();
+        await loadSessions();
+      } catch (error) {
+        reply.hidden = false;
+        reply.textContent = "请求失败";
+        waiting = false;
+      } finally {
+        sending = false;
+        send.disabled = waiting;
+        newSession.disabled = waiting;
+        await loadSessions();
+      }
+    });
+
+    async function sendApproval(approved) {
+      allow.disabled = true;
+      reject.disabled = true;
+      reply.hidden = false;
+      reply.textContent = "正在回复...";
+      route.hidden = true;
+      route.textContent = "";
+      try {
+        const response = await fetch("/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approved, thread_id: threadId }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          reply.textContent = "请求失败";
+          waiting = false;
+          return;
+        }
+        showResult(data);
+        await loadHistory();
+        await loadSessions();
+      } catch (error) {
+        reply.hidden = false;
+        reply.textContent = "请求失败";
+        waiting = false;
+      } finally {
+        allow.disabled = false;
+        reject.disabled = false;
+        send.disabled = waiting;
+        newSession.disabled = waiting;
+      }
+    }
+
+    newSession.addEventListener("click", async () => {
+      if (waiting || sending) return;
+      newSession.disabled = true;
+      try {
+        const response = await fetch("/sessions", { method: "POST" });
+        const data = await response.json();
+        if (!response.ok || !data.id) {
+          reply.hidden = false;
+          reply.textContent = "请求失败";
+          return;
+        }
+        setThread(data.id);
+        clearReply();
+        await loadSessions();
+        await loadHistory();
+      } catch (error) {
+        reply.hidden = false;
+        reply.textContent = "请求失败";
+      } finally {
+        newSession.disabled = waiting;
+      }
+    });
+
+    message.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        composer.requestSubmit();
+      }
+    });
+
+    allow.addEventListener("click", () => sendApproval(true));
+    reject.addEventListener("click", () => sendApproval(false));
+
+    loadSessions();
+    loadHistory();
+  </script>
+</body>
+</html>

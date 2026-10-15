@@ -1,0 +1,6 @@
+python-dotenv
+openai
+fastapi
+uvicorn
+langgraph
+langgraph-checkpoint-sqlite
