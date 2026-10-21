@@ -16,7 +16,7 @@ OUTPUT = BENCHMARK / "outputs" / "predictions.jsonl"
 TRAJECTORY = BENCHMARK / "outputs" / f"{INSTANCE_ID}.json"
 
 
-def run(args, cwd=None, capture=False):
+def run(args, cwd=None, capture=False, env=None):
     return subprocess.run(
         args,
         cwd=cwd,
@@ -24,6 +24,7 @@ def run(args, cwd=None, capture=False):
         capture_output=capture,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
 
@@ -150,6 +151,10 @@ def main() -> None:
     run_id = f"dd-coder-{uuid.uuid4().hex[:8]}"
     swebench = Path(sys.executable).with_name("swebench.exe")
     print("开始官方评分，run-id:", run_id)
+    # 官方评分在 Windows 上会按系统编码（GBK）读取 UTF-8 测试日志。
+    # PYTHONUTF8 让这次新启动的评分进程改用 UTF-8。
+    grading_env = os.environ.copy()
+    grading_env["PYTHONUTF8"] = "1"
     run(
         [
             str(swebench),
@@ -165,6 +170,7 @@ def main() -> None:
             "1",
         ],
         cwd=ROOT,
+        env=grading_env,
     )
 
 

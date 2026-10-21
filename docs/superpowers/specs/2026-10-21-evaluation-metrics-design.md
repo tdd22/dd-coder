@@ -10,6 +10,10 @@
 
 首版每个实例、每个配置只运行一次。系统不能把单次随机波动包装成统计确定性；关键结果翻转应作为暂定证据并进入复跑或人工复核队列。
 
+## 版本
+
+当前这份 Agent 记为 **v1**，作为以后比较的固定基线。前 50 题现在不跑。等 Agent 有下一版改动时，再用同一份清单评测，和 v1 比较。
+
 ## 范围
 
 首版只覆盖 SWE-bench Lite `test` 集的前 50 题，顺序与 `SWE-bench/SWE-bench_Lite` 的发布顺序一致。清单固定在 `benchmark/swebench_lite_first50.txt`，基线和候选必须使用同一份。其余 250 题不进入首版比较。官方 evaluator 仍是修复正确性的唯一裁判。
@@ -222,17 +226,9 @@ judge 必须固定模型、prompt、温度和 rubric 版本。输入中隐藏“
 
 ## 与现有实现的关系
 
-`benchmark/metrics_table.py` 已收集 Agent 轮数、工具次数、重复命令、大结果外置、命令失败、token 和耗时。
+`benchmark/evaluation.py` 负责把一次运行整理成记录并比较两个版本。`assemble_instance` 读取官方评测目录里的 `report.json`、`patch.diff` 和 `run_instance.log`。效率数字由调用方放入，token 和耗时来自 Langfuse，轮数和工具次数来自 `benchmark/metrics_table.py`。`compare` 给出赢、输和四态结论。`apply_judge` 只接收带证据的标签，缺证据时改为「无法判断」，不覆盖官方结果。`write_run` 按 run ID 保存 JSON，已有文件不会覆盖。
 
-首版主要缺口是：
-
-1. 读取并规范化官方 SWE-bench evaluator 结果；
-2. 记录门禁结果和补丁统计；
-3. 保存完整的可复现性元数据；
-4. 生成基线与候选版本的逐题配对报告；
-5. 增加带证据的定性 judge 输出。
-
-现有 CSV 可以继续作为导出格式，但规范化运行记录应保存为结构化 JSON；CSV 不适合作为带嵌套证据和版本信息的唯一事实来源。
+现有 CSV 可以继续作为效率表的导出格式。带门禁、证据和版本信息的正式记录以 JSON 为准。
 
 ## 验收标准
 
