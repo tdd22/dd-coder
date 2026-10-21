@@ -1,0 +1,44 @@
+diff --git a/sympy/core/_print_helpers.py b/sympy/core/_print_helpers.py
+index 96d7e72676..9cc9eec175 100644
+--- a/sympy/core/_print_helpers.py
++++ b/sympy/core/_print_helpers.py
+@@ -9,7 +9,7 @@ class Printable:
+     """
+     The default implementation of printing for SymPy classes.
+ 
+-    This implements a hack that allows us to print elements of built-in
++    This implements a hack that allows to print elements of built-in
+     Python containers in a readable way. Natively Python uses ``repr()``
+     even if ``str()`` was explicitly requested. Mix in this trait into
+     a class to get proper default printing.
+@@ -25,6 +25,13 @@ def __str__(self):
+ 
+     __repr__ = __str__
+ 
++    # We don't define any instance attributes here, but this class is mixed
++    # into ``Basic`` (and thus into almost every SymPy object), so it must
++    # define ``__slots__`` to keep those objects from acquiring a ``__dict__``
++    # (see issue 20809). ``init_printing`` only ever sets attributes on the
++    # class itself, never on instances.
++    __slots__ = ()
++
+     def _repr_disabled(self):
+         """
+         No-op repr function used to disable jupyter display hooks.
+diff --git a/sympy/core/tests/test_basic.py b/sympy/core/tests/test_basic.py
+index faa27b9f22..09947a0b1c 100644
+--- a/sympy/core/tests/test_basic.py
++++ b/sympy/core/tests/test_basic.py
+@@ -34,6 +34,12 @@ def test_structure():
+     assert bool(b1)
+ 
+ 
++def test_immutable():
++    assert not hasattr(b1, '__dict__')
++    with raises(AttributeError):
++        b1.x = 1
++
++
+ def test_equality():
+     instances = [b1, b2, b3, b21, Basic(b1, b1, b1), Basic]
+     for i, b_i in enumerate(instances):

@@ -24,6 +24,12 @@ dd-coder/
     config.py    读取 .env
     llm.py       OpenAI 兼容客户端
     routing.py   任务到 lite / default / craft 的路由
+    pending.py   会话未决任务的校验、迁移和渲染
+    prompt_assembly.py  系统提示片段的预算装箱
+    skills.py    技能目录、按名字加载、技能声明收窄工具
+    connectors.py  MCP 子进程、信任和 tools/call
+    context_compact.py  对话副本的分层压缩
+    tool_results.py  工具结果外部化：阈值、写盘、指针、按行段读回
     transcript.py  每个会话一份只追加的 JSONL 证据
     workspace.py 工作区记忆：日志、蒸馏、抄本
     user_memory.py 用户档案和跨项目偏好
@@ -38,6 +44,10 @@ dd-coder/
   data/
     checkpoints.sqlite   会话数据库，服务运行后生成
     transcripts/         每个 thread_id 一个 .jsonl，服务写过对话后生成
+    tool-results/        每个 thread_id 一个文件夹，第一次外部化后生成
+    skills/              用户级技能，每个技能一个 SKILL.md
+    mcp.json             外接工具进程配置，有连接器之后才需要
+    connector_trust.json 已信任的连接器，用户自己写
     workspace-memory/    每个工作区一份记忆，第一次写入后生成
     user-memory/         本机用户的档案和偏好，第一次打开后生成
   main.py        终端里跑一轮，不走网页
@@ -46,7 +56,7 @@ dd-coder/
   .env.example   不含密钥的示例
 ```
 
-已删除、不要再加回来的旧实现：`agent/loop.py`、`agent/pending.py`、`agent/diff.py`、`agent/history.py`、`data/session.json`。
+已删除、不要再加回来的旧实现：`agent/loop.py`、`agent/diff.py`、`agent/history.py`、`data/session.json`。现在的 `agent/pending.py` 是未决任务，不是以前那份审批队列。
 
 ## 环境
 
@@ -71,6 +81,14 @@ WORKSPACE_DIR=./workspace
 ```
 
 `OPENAI_BASE_URL` 和 `OPENAI_MODEL` 按实际服务商填写。`WORKSPACE_DIR` 必须是已存在的文件夹。`load_config()` 会把它解析成绝对路径。
+
+要把模型调用记到 Langfuse Cloud，再加这三项。公钥和密钥留空时不发送记录。地址要和 Langfuse 项目设置里显示的区域一致，欧盟区是 `https://cloud.langfuse.com`，美国区是 `https://us.cloud.langfuse.com`。
+
+```text
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
 
 `OPENAI_MODEL_LITE`、`OPENAI_MODEL_DEFAULT`、`OPENAI_MODEL_CRAFT` 可以不填。空着时这三档都使用 `OPENAI_MODEL`。编码循环读 `models["craft"]`，会话标题读 `models["lite"]`。
 
@@ -99,19 +117,22 @@ python main.py
   -> server.chat
   -> graph.run_chat
   -> 从 SQLite 读出这个 thread_id 的 messages
+  -> 先把本轮用户消息写入 Transcript，得到 event_id
   -> 追加本轮用户消息，并把 turns 重置为 0
-  -> agent 节点读出工作区记忆，临时放在发给模型的消息前面，不写回会话
-  -> agent 节点调用模型，turns 加 1
+  -> pending_extract 节点最多根据这条用户事件调用一次 lite 模型
+  -> agent 节点组装系统提示，压缩对话副本，再调用模型，turns 加 1
   -> 如果回复里有 tool_calls，进入 tools 节点
   -> 真正调用处理函数之前先做权限判断
-  -> 允许：执行工具，结果交回模型
+  -> 允许：执行工具；超过阈值的结果先写入 tool-results，指针交回模型
   -> 拒绝：不执行，把「未执行」交回模型
   -> 询问：interrupt 暂停，返回 pending，页面显示原因和「同意」「拒绝」
   -> 浏览器 POST /approve 后，从 tools 节点开头继续，再按允许或拒绝走上面两条
   -> tools 执行完，turns 还没到 8，就回到 agent
   -> tools 执行完，turns 已经到 8，就停止，原因是 max_turns
-  -> 没有 tool_calls，并且 finish_reason 是 length，就停止，原因是 max_tokens
-  -> 没有 tool_calls 的其它情况，停止，原因是 final_answer
+  -> 没有 tool_calls 时进入 pending_verify；finish_reason 是 length 时 stop_reason 仍是 max_tokens，其它是 final_answer
+  -> 有 open 任务时，pending_verify 调用 lite 模型，只保存完成建议
+  -> 没有 open 任务时，pending_verify 不调用模型
+  -> 图结束后先写工具调用和工具结果；没有审批暂停时，Harness 再核验证据并提交 done
   -> 返回 reply、events、pending、stop_reason、turns
   -> 没有 pending 时，页面显示回复；如果不是 final_answer，再显示循环停止原因
 ```
@@ -119,13 +140,14 @@ python main.py
 图的边：
 
 ```text
-START -> agent -> 有工具调用? -> tools -> 未到 8 轮? -> agent
-                    没有 -> END              已经 8 轮 -> END
+START -> pending_extract -> agent -> 有工具调用? -> tools -> 未到 30 轮? -> agent
+                                         没有 -> pending_verify -> END
+                                                         已经 30 轮 -> END
 ```
 
 `llm.chat` 返回模型消息和 `finish_reason`，并带 `max_tokens=8000`。`agent_node` 把 `finish_reason` 写入状态字段 `provider_finish_reason`。`tools_node` 不调用模型，也不覆盖这个字段，所以上一轮记下的值会留在最终状态里。
 
-`agent_node` 用 `stop_reason_for` 决定这一轮是继续还是停止。有工具调用就继续。没有工具调用时，`finish_reason == "length"` 记为 `max_tokens`，其它记为 `final_answer`。`turns` 只统计这一次用户请求里的模型调用次数，每次 `invoke` 都从 0 开始。上限 `MAX_TURNS` 是 8。第 8 次如果还要工具，工具会执行并写入消息，然后停止，不再请求模型。这时 `stop_reason` 是 `max_turns`，`provider_finish_reason` 仍是第 8 次模型调用留下的值。
+`agent_node` 用 `stop_reason_for` 决定这一轮是继续还是停止。有工具调用就继续。没有工具调用时，`finish_reason == "length"` 记为 `max_tokens`，其它记为 `final_answer`。`turns` 只统计这一次用户请求里的模型调用次数，每次 `invoke` 都从 0 开始。上限 `MAX_TURNS` 是 30。第 30 次如果还要工具，工具会执行并写入消息，然后停止，不再请求模型。这时 `stop_reason` 是 `max_turns`，`provider_finish_reason` 仍是第 30 次模型调用留下的值。
 
 放回状态时，`function.arguments` 必须保持字符串。只有在 `tools_node` 里执行前才 `json.loads`。把参数提前变成字典再送回接口，会得到 422。
 
@@ -149,6 +171,8 @@ START -> agent -> 有工具调用? -> tools -> 未到 8 轮? -> agent
 | --- | --- | --- | --- |
 | `list_dir` | 列出目录。文件夹名后面加 `/` | 直接调用 | 可以 |
 | `read_file` | 按 UTF-8 读取文件 | 直接调用 | 可以 |
+| `read_artifact` | 按行段读取外部化到磁盘的完整工具结果，单次正文最多 30000 字符 | 直接调用 | 可以 |
+| `skill` | 按名字加载一份技能。结果只有「已加载」，正文进下一次系统提示 | 直接调用 | 按顺序 |
 | `tool_search` | 按 `names` 或 `query` 查找延迟工具，把完整参数写入结果 | 直接调用 | 按顺序 |
 | `defer_execute` | 执行已经搜索过的延迟工具。参数是 `name` 和 `arguments` | 直接调用 | 按顺序 |
 | `write_file` | 直接覆盖写入。父目录不存在会创建 | 先 `tool_search`，再 `defer_execute` | 按顺序 |
@@ -160,7 +184,7 @@ START -> agent -> 有工具调用? -> tools -> 未到 8 轮? -> agent
 
 `tool_search` 和 `defer_execute` 的具体逻辑在 `search` 和 `execute_deferred`。`dispatch` 看到这两个名字就转去调用它们，不走登记记录上的 `handler`。那两个 `handler` 只是占位，因为每条 `ToolSpec` 都必须有处理函数。`handler` 只能看到工作区和参数，看不到当前会话已经加载过哪些名字。
 
-已加载名单在图的状态字段 `loaded_tools` 里。`tools_node` 每次执行前读出它，传给 `dispatch_many`，执行完再写回去。`run_chat` 的 `invoke` 输入不要带这个字段，否则会把这条会话已经搜索过的工具清掉。没搜索过就调用 `defer_execute`，会得到先去 `tool_search` 的提示。`read_file` 这类直接工具如果走 `defer_execute`，会得到直接调用的提示。同一个名字第二次搜索，结果里标记为已加载。
+已加载工具名单在图的状态字段 `loaded_tools` 里，已加载技能在 `loaded_skills` 里。`tools_node` 每次执行前读出它们，传给 `dispatch_many`，执行完再写回去。`run_chat` 的 `invoke` 输入不要带这两个字段，否则会把这条会话已经搜索过的工具和已经加载的技能清掉。没搜索过就调用 `defer_execute`，会得到先去 `tool_search` 的提示。`read_file` 这类直接工具如果走 `defer_execute`，会得到直接调用的提示。同一个名字第二次搜索，结果里标记为已加载。
 
 处理函数里的路径再经过 `reslove_inside`：解析后的绝对路径必须等于工作区，或者位于工作区里面。`..` 会在这里被拒绝。权限阶段用的是 `path_is_inside`，规则相同，但只返回能不能通过，不抛异常。
 
@@ -174,6 +198,8 @@ START -> agent -> 有工具调用? -> tools -> 未到 8 轮? -> agent
 
 ```text
 dispatch 检查完参数
+  -> 技能声明：没加载技能时跳过；加载后，工具必须出现在声明里
+  -> MCP 还要已信任、已连接，并且声明它的技能允许网络
   -> execution_block
   -> decide：只给出 allow / ask / deny，不写文件，不跑命令，不询问
   -> resolve_permission：只决定最后能不能执行
@@ -187,7 +213,7 @@ dispatch 检查完参数
 | --- | --- | --- | --- |
 | 1 | `request.invalid_arguments` | 拒绝 | 路径工具缺少路径，或命令不是非空字符串列表 |
 | 2 | `path.outside_workspace` | 拒绝 | `list_dir`、`read_file`、`write_file` 的路径跑出工作区 |
-| 3 | `read.allow` | 允许 | 工作区内的 `list_dir`、`read_file`，以及 `tool_search` |
+| 3 | `read.allow` | 允许 | 工作区内的 `list_dir`、`read_file`，以及 `tool_search`、`read_artifact`、`skill` |
 | 4 | `path.write_requires_approval` | 询问 | 工作区内的 `write_file` |
 | 5 | `command.hard_deny` | 拒绝 | 命令文字命中 `sudo`、`rm -rf`、关机、格式化、典型 `dd` 设备写入 |
 | 6 | `command.requires_approval` | 询问 | 其余 `run_command` |
@@ -195,7 +221,10 @@ dispatch 检查完参数
 | 8 | `profile.write_requires_approval` | 询问 | `update_user_profile`。同意后才改档案 |
 | 9 | `preference.write_requires_approval` | 询问 | `save_user_preference`。同意后才保存偏好 |
 | 10 | `preference.forget_requires_approval` | 询问 | `forget_user_preference`。同意后才遗忘 |
-| 11 | `default.deny` | 拒绝 | 没有规则覆盖的工具名 |
+| 11 | `mcp.requires_approval` | 询问 | 名字以 `mcp__` 开头的外部工具。同意后才 `tools/call` |
+| 12 | `default.deny` | 拒绝 | 没有规则覆盖的工具名 |
+
+技能声明挡在 `decide` 前面。没声明、路径不在技能允许范围内、连接器未信任或未连接，都是直接拒绝，不会出现同意按钮。`skill`、`tool_search`、`defer_execute` 不收进技能声明。
 
 `list_dir` 可以不传 `relative`，这时按 `.` 判断。`write_file` 即使路径在工作区内也要询问：没越界只说明位置合法，不说明用户同意改文件。
 
@@ -217,6 +246,22 @@ dispatch 检查完参数
 
 终端里没传入询问函数时，`execution_block` 用 `console_approver`：打印规则和原因，读一行输入，只有 `y` 算同意。
 
+## 技能
+
+逻辑在 `agent/skills.py`。项目技能放在 `{WORKSPACE_DIR}/.dd-coder/skills/<名字>/SKILL.md`，用户技能放在 `data/skills/<名字>/SKILL.md`。同名时用项目里的那份。文件头只认 `title`、`summary`、`read_when`、`agent_created`、`permissions`。`permissions` 里是 `tools`、`network`、`paths.read`、`paths.write`。未知字段、绝对路径、带 `..` 的路径，这份技能不进目录。目录名必须和 `title` 一致。
+
+`agent_node` 每次只把目录放进系统提示：名字、摘要、触发词。模型调用 `skill` 才把正文和权限快照写进 `loaded_skills`。快照留在这个 `thread_id` 的检查点里。之后文件改了，已经加载的快照不变。第二次加载同一个名字，不再读盘。
+
+没加载技能时，现有工具的允许和询问不变。加载之后，要执行的工具必须出现在已加载技能 `tools` 的并集里。`read_file`、`list_dir` 看 `paths.read`，`write_file` 看 `paths.write`。命中其中一份声明了该工具的技能即可。`network` 只约束 MCP 工具。
+
+## MCP
+
+逻辑在 `agent/connectors.py`。配置是 `data/mcp.json` 的 `mcpServers`，每项有 `command`、`args`、`env`。信任写在 `data/connector_trust.json`，例如 `{"github": {"trusted": true}}`。信任不是模型工具。未信任的进程不启动。
+
+已信任的连接器在搜索或组装提示时按 MCP stdio 启动：`Content-Length` 帧、`initialize`、`tools/list`。每个服务器一个子进程，留在服务进程里，不写进检查点。发现的工具登记为延迟工具，名字是 `mcp__<服务器>__<工具名>`。模型先 `tool_search`，再 `defer_execute`。执行前再次检查信任、连接和技能声明，通过后仍要询问，同意才发 `tools/call`。`env` 不进提示和工具结果。调用失败或进程退出后，同一次调用最多再启动一次。
+
+没有技能声明、或者声明了但 `network` 不是 `true`，这些工具不出现在搜索结果里。
+
 ## 模型路由
 
 逻辑在 `agent/routing.py`。任务名直接对应层级，不根据用户那句话猜测。
@@ -225,12 +270,61 @@ dispatch 检查完参数
 | --- | --- | --- |
 | `agent` | craft | 可以带现有工具列表 |
 | `title` | lite | 不传工具 |
+| `pending_extract` | lite | 不传工具 |
+| `pending_verify` | lite | 不传工具 |
+| `context_summary` | lite | 不传工具 |
 
 `agent_node` 调用 `route_task(settings, "agent")`，复制一份配置，把 `model` 换成路由结果，再交给 `chat()`。`chat()` 的参数不变，它仍然读 `config["model"]`。状态字段 `model_tier` 和 `model_name` 记下这一次；`tools_node` 不覆盖它们。`run_chat` 和 `resume_chat` 把这两个字段放进返回值，`/chat` 和 `/approve` 再带回页面。
 
-`write_title_if_absent` 在没有 `pending`、并且日志里还没有 `ai-title` 时，用 `complete_text()` 走 lite。这次调用不进入 8 轮计数。失败只打印到跑服务的终端，不把已经生成的回复变成错误。
+`write_title_if_absent` 在没有 `pending`、并且日志里还没有 `ai-title` 时，用 `complete_text()` 走 lite。这次调用不进入 30 轮计数。失败只打印到跑服务的终端，不把已经生成的回复变成错误。
 
-`agent_node` 在调用 `chat()` 之前读取 `UserMemory().get_context_for_agent()`，再读取 `WorkspaceMemory(workspace).get_context_for_agent()`。有内容时，临时放两条 `system`，用户上下文在前，工作区记忆在后。返回状态时仍用原来的 `state["messages"]` 加上新的助手消息，这两段系统文字不进 checkpoint，也不进历史栏。空的那段不加。聊天不调用 `distill()`。
+`agent_node` 在调用 `chat()` 之前，用 `plan_prompt()` 组装系统提示，再用 `compact_context()` 压缩 `state["messages"]` 的深拷贝。`chat()` 收到的是系统片段加压缩副本，第三个参数是这一轮的 `REGISTRY.openai_tools()`。返回状态时仍用原来的 `state["messages"]` 加上新的助手消息。系统片段和压缩副本不进 checkpoint，也不进历史栏。聊天不调用 `distill()`。
+
+可选片段里还有技能目录、已加载技能正文，以及当前看得见的延迟工具名单。技能正文的预算优先级高于记忆。正文放不下时，改成一句「已加载但超出预算，正文未注入」。
+
+## 未决任务
+
+逻辑在 `agent/pending.py`，状态放在当前 `thread_id` 的 checkpoint 里。`pending_items` 和 `processed_pending_source_ids` 跨提问保留，`run_chat` 的 `invoke` 输入不能带这两个字段。`pending_completion_proposals` 每次新用户消息重置为空；审批恢复不重置。
+
+一条任务有 `pending:<12 hex>` 编号、描述、`open` / `blocked` / `done`、阻塞原因、创建来源和最近一次变化来源。`blocked` 必须有原因。`done` 是终态。模型不能直接修改任务，也不能生成任务编号。
+
+`pending_extract` 只在新的用户消息进入图时运行一次。它把当前用户 Transcript 事件、时间和 `open` / `blocked` 任务交给 lite 模型。模型只能建议 `create`、`block`、`open` 或 `no_change`。Harness 校验后才写入 `pending_items`，并把来源事件放进 `processed_pending_source_ids`。同一个事件再次进入节点时不再调用模型。模型失败或 JSON 不合法时，任务保持原样，编码循环继续。
+
+`agent` 没有工具调用时进入 `pending_verify`。没有 `open` 任务就不调用模型。verifier 只能提出完成建议，建议先放在 `pending_completion_proposals`。图结束且没有审批暂停时，`record_visible_messages()` 先写工具结果，`commit_pending_done()` 再核对：任务仍是 `open`，`call_id` 属于本轮，结果事件真实存在，并且结果不是 `未执行:`。通过后才把状态改成 `done`，`done_evidence` 保存工具结果的 `event_id`。`blocked` 不能直接完成。审批恢复从 `tools` 继续，不重新提取任务；暂停期间不提交 `done`。
+
+这两次 lite 调用不增加 `turns`，也不覆盖 `model_tier` 和 `model_name`。`run_chat` 会在进图前写用户消息；如果图随后失败，Transcript 仍保留这条已收到的消息。
+
+## 上下文预算
+
+组装在 `agent/prompt_assembly.py`，压缩在 `agent/context_compact.py`。两边共用一次请求的字符预算，但改的不是同一份数据。
+
+系统侧片段：
+
+| 片段 | 策略 |
+| --- | --- |
+| `base` | 必选。身份、工作区边界、权限边界 |
+| `tools` | 必选预算占用。不写进系统文本，工具列表仍走 `chat(..., TOOLS)` |
+| `user_memory` | 可选。来自 `UserMemory.get_context_for_agent()` |
+| `workspace_memory` | 可选。来自 `WorkspaceMemory.get_context_for_agent()` |
+| `pending` | 可选。有 `open` 或 `blocked` 时优先装箱 |
+
+`PROMPT_BUDGET_CHARS` 是 12000。必选片段超预算抛 `PromptBudgetError`，不请求编码模型。可选片段装不下就整段丢掉，不切半段。空记忆不产生片段。
+
+对话侧只压缩深拷贝。`estimate_messages()` 用 JSON 字符数。达到 `MESSAGE_SOFT_THRESHOLD`（80000）才进入四层：截断超长工具结果、同一文件多次 `read_file` 只留最新一对、修剪旧消息并删掉跨边界的工具对、用 lite 任务 `context_summary` 摘要更旧的消息。摘要失败或没有变短，就保留这一层拿到的副本。四层后仍达到 `MESSAGE_HARD_LIMIT`（120000）抛 `MessageViewLimitExceeded`。系统片段、压缩副本和 `TOOLS` 合计达到 `REQUEST_HARD_LIMIT`（140000）抛 `RequestBudgetExceeded`。这两种错误都不请求编码模型。
+
+`context_summary` 不增加 `turns`，也不覆盖 `model_tier` 和 `model_name`。审批恢复后，下一次 `agent_node` 会重新组装、重新压缩。
+
+## 工具结果外部化
+
+逻辑在 `agent/tool_results.py`。`tools_node` 在 `dispatch_many` 返回后、结果写回 `messages` 前检查每条结果：`run_command` 超过 30000 字符，其它工具按 UTF-8 字节超过 50KB，就把完整原文写到 `data/tool-results/<thread_id>/tool_result_NNN.txt`，messages 里改放指针。这是入口控制：大结果从源头就不进 checkpoint，和 `compact_context` 在发送副本上截断是两层不同的防线。
+
+指针包含工具名、原始字符数、SHA-256、文件绝对路径，以及开头 6144 字符和结尾 24576 字符的预览；刚过阈值时结尾预览从开头预览的末尾接着开始，不重复同一段内容。替换发生在写回 `messages` 之前，所以 SQLite checkpoint、后续每一轮、页面 `events` 和 Transcript 的 `function_call_result` 记录的都是指针文本，完整原文只在产物文件里。
+
+文件名从 `tool_result_001.txt` 起用独占创建分配：文件已存在就试下一个编号，服务重启后计数重来也不会覆盖旧证据。写盘用 `newline=""`，磁盘字节和原始结果一致，指针对得上文件；写完 `fsync`。产物目录名复用 Transcript 的 `thread_id` 字符规则，拼路径不会越界。磁盘写入失败（`OSError`）时打印到终端，本轮结果按原文进 messages，不丢掉这次结果。
+
+模型用 `read_artifact` 读回原文，参数是 `path`、`offset`、`limit`（行号 0 起，默认 500 行，最多 2000 行），返回行段加 `[文件名: 第 X-Y 行, 共 N 行]` 的头。`path` 可以是指针里的绝对路径，或相对结果目录的路径；解析后必须仍在 `data/tool-results/` 里面，否则返回错误文字，指针不能变成任意文件读取入口。单次返回正文最多 30000 字符，超出截断并提示缩小 `limit`——这个上限保证读回的结果永远不会再次触发外部化。权限上它是只读工具，走 `read.allow`，直接调用，可以并发；它的路径边界由处理函数检查，权限层不看。
+
+审批暂停发生在权限阶段、工具执行之前，所以被询问的工具不会产生半截产物。但恢复后 `tools_node` 整体重跑，同一轮里暂停前已经外部化的只读结果会再写一份新编号文件，旧产物留在磁盘上。
 
 ## 工作区记忆
 
@@ -273,7 +367,7 @@ data/workspace-memory/<workspace_id>/
 
 每个会话一个文件：`data/transcripts/<thread_id>.jsonl`。`thread_id` 只能是字母、数字、下划线和短横线。checkpoint 仍然是图的运行时，暂停和 `loaded_tools` 都靠它。JSONL 只追加已经提交进状态的事件。
 
-`run_chat` 和 `resume_chat` 在图返回后，按本轮新消息调用 `record_visible_messages`。用户和带文字的助手消息写成 `type: message`。助手消息里的每个工具调用写成 `function_call`。工具结果写成 `function_call_result`。写在 `tools_node` 里面会在恢复审批时记重，所以不要挪到节点里。
+`run_chat` 在进图前把用户消息写成 `type: message`，`append()` 返回带 `event_id` 的完整事件。图返回后，`record_visible_messages` 跳过用户消息，只补带文字的助手消息、`function_call` 和 `function_call_result`。`resume_chat` 没有新的用户消息，只补这次恢复新增的内容。写在 `tools_node` 里面会在恢复审批时记重，所以不要挪到节点里。
 
 每一行由 `append` 补上 `schema_version`、`sequence`、`session_id`、`event_id`、`recorded_at`。调用方不能自己带这些字段。`event_id` 是 `transcript:<thread_id>:<sequence>`。文件非空且最后一个字节不是 `\n` 时，拒绝再追加，原文件不改。读取时，只有最后一截不完整、而且没有换行的 JSON 会被跳过，并标上 `ignored_partial_tail`。中间坏行、序号或 `event_id` 对不上，抛 `TranscriptCorruptionError`。
 
@@ -323,7 +417,9 @@ data/workspace-memory/<workspace_id>/
 - `server.py` 在导入时调用 `load_config()`，但请求处理并不使用这个变量。`.env` 缺项时，服务会在启动阶段失败。
 - 工具调用过程只 `print` 到跑服务的终端，页面要等整轮结束后才看到 `events`。询问原因会先出现在决定框里。
 - `python main.py` 没有 checkpointer。模型在这条路上要写入或跑命令时，`interrupt` 无法暂停。
-- 恢复暂停时 `tools_node` 从头再跑。同一轮暂停前的只读工具会再执行一次。
+- 恢复暂停时 `tools_node` 从头再跑。同一轮暂停前的只读工具会再执行一次；已经外部化的结果会再写一份新编号产物，旧产物成为孤儿。
+- `read_artifact` 按行分页。单行就超过 30000 字符时（比如压成一行的 JSON），只能截断返回，那部分内容模型读不回来。
+- 外部化产物没有清理机制，会话删除后文件仍留在 `data/tool-results/`。
 - 命令危险词只检查拼出来的文字，不是沙盒。`run_command` 仍可能访问工作区以外的路径，所以普通命令一律询问。
 - 聊天不调用 `distill()`。当天用 `write_memory` 写下的带 `memory_key` 的事实，要另一次蒸馏之后才会进入 `MEMORY.md`。
 - 打平的两个答案只出现在 `DistillReport.tied` 里。重启后没有一份待审案子，也没有五阶段事务日志。
@@ -333,6 +429,7 @@ data/workspace-memory/<workspace_id>/
 还没做，也不要当成已经答应的范围：
 
 - 工作区记忆的冲突队列、人工裁决，以及多文件事务恢复。
+- 外部化产物接入记忆的瘦引用，以及租约、对账和两阶段清理（s13 后半）。
 - 删除会话，以及按时间而不是按 id 排列侧边栏。
 - 流式输出：边生成边显示回复和工具记录。
 - 工作区文件树。

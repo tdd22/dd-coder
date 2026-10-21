@@ -1,0 +1,120 @@
+2026-10-18 17:07:31,514 - INFO - Image not found locally, attempting to pull...
+2026-10-18 17:08:41,673 - INFO - Creating container for pallets__flask-4045...
+2026-10-18 17:08:42,190 - INFO - Container for pallets__flask-4045 created: b5c6c3ffa01fe820c07a93546e3fc3082997d6574e70d98bd3528fcf3a1cb301
+2026-10-18 17:08:42,648 - INFO - Container for pallets__flask-4045 started: b5c6c3ffa01fe820c07a93546e3fc3082997d6574e70d98bd3528fcf3a1cb301
+2026-10-18 17:08:42,650 - INFO - Intermediate patch for pallets__flask-4045 written to logs\run_evaluation\dd-coder-e89687fc\dd-coder-deepseek-flash\pallets__flask-4045\patch.diff, now applying to container...
+2026-10-18 17:08:42,944 - INFO - >>>>> Applied Patch:
+Checking patch src/flask/blueprints.py...
+warning: src/flask/blueprints.py has type 100755, expected 100644
+Applied patch src/flask/blueprints.py cleanly.
+
+2026-10-18 17:08:43,126 - INFO - Git diff before:
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index 5fb84d86..bcb0e0fa 100755
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -150,6 +150,10 @@ class Blueprint(Scaffold):
+         automatic detection can fail, so the path can be specified
+         manually instead.
+ 
++    .. versionchanged:: 2.0.1
++        The ``name`` parameter may not contain a dot. Dots are used as
++        separators in endpoint names for nested blueprints.
++
+     .. versionchanged:: 1.1.0
+         Blueprints have a ``cli`` group to register nested CLI commands.
+         The ``cli_group`` parameter controls the name of the group under
+@@ -188,6 +192,13 @@ class Blueprint(Scaffold):
+             template_folder=template_folder,
+             root_path=root_path,
+         )
++
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
++        if "." in name:
++            raise ValueError("'name' may not contain a dot '.' character.")
++
+         self.name = name
+         self.url_prefix = url_prefix
+         self.subdomain = subdomain
+@@ -250,6 +261,8 @@ class Blueprint(Scaffold):
+ 
+         .. versionadded:: 2.0
+         """
++        if blueprint is self:
++            raise ValueError("Cannot register a blueprint on itself")
+         self._blueprints.append((blueprint, options))
+ 
+     def register(self, app: "Flask", options: dict) -> None:
+@@ -261,7 +274,7 @@ class Blueprint(Scaffold):
+         :param app: The application this blueprint is being registered
+             with.
+         :param options: Keyword arguments forwarded from
+-            :meth:`~Flask.register_blueprint`.
++            :meth:`~flask.Flask.register_blueprint`.
+         :param first_registration: Whether this is the first time this
+             blueprint has been registered on the application.
+         """
+@@ -340,14 +353,22 @@ class Blueprint(Scaffold):
+                 app.cli.add_command(self.cli)
+ 
+         for blueprint, bp_options in self._blueprints:
+-            url_prefix = options.get("url_prefix", "")
+-            if "url_prefix" in bp_options:
+-                url_prefix = (
+-                    url_prefix.rstrip("/") + "/" + bp_options["url_prefix"].lstrip("/")
++            bp_options = bp_options.copy()
++            bp_url_prefix = bp_options.get("url_prefix")
++
++            if bp_url_prefix is None:
++                bp_url_prefix = blueprint.url_prefix
++
++            if state.url_prefix is not None and bp_url_prefix is not None:
++                bp_options["url_prefix"] = (
++                    state.url_prefix.rstrip("/") + "/" + bp_url_prefix.lstrip("/")
+                 )
++            elif bp_url_prefix is not None:
++                bp_options["url_prefix"] = bp_url_prefix
++            elif state.url_prefix is not None:
++                bp_options["url_prefix"] = state.url_prefix
+ 
+-            bp_options["url_prefix"] = url_prefix
+-            bp_options["name_prefix"] = options.get("name_prefix", "") + self.name + "."
++            bp_options["name_prefix"] = state.name_prefix + self.name + "."
+             blueprint.register(app, bp_options)
+ 
+     def add_url_rule(
+@@ -360,12 +381,12 @@ class Blueprint(Scaffold):
+         """Like :meth:`Flask.add_url_rule` but for a blueprint.  The endpoint for
+         the :func:`url_for` function is prefixed with the name of the blueprint.
+         """
+-        if endpoint:
+-            assert "." not in endpoint, "Blueprint endpoints should not contain dots"
+-        if view_func and hasattr(view_func, "__name__"):
+-            assert (
+-                "." not in view_func.__name__
+-            ), "Blueprint view function name should not contain dots"
++        if endpoint and "." in endpoint:
++            raise ValueError("Blueprint endpoints should not contain dots")
++
++        if view_func and hasattr(view_func, "__name__") and "." in view_func.__name__:
++            raise ValueError("Blueprint view function name should not contain dots")
++
+         self.record(lambda s: s.add_url_rule(rule, endpoint, view_func, **options))
+ 
+     def app_template_filter(self, name: t.Optional[str] = None) -> t.Callable:
+2026-10-18 17:08:43,129 - INFO - Eval script for pallets__flask-4045 written to logs\run_evaluation\dd-coder-e89687fc\dd-coder-deepseek-flash\pallets__flask-4045\eval.sh; copying to container...
+2026-10-18 17:08:56,274 - INFO - Test runtime: 12.99 seconds
+2026-10-18 17:08:56,279 - ERROR - Error in evaluating model for pallets__flask-4045: 'gbk' codec can't encode character '\xe4' in position 220377: illegal multibyte sequence
+Traceback (most recent call last):
+  File "C:\Users\tdd88\Desktop\dd-coder\swebench-venv\Lib\site-packages\swebench\harness\run_evaluation.py", line 376, in run_instance
+    f.write(test_output)
+    ~~~~~~~^^^^^^^^^^^^^
+UnicodeEncodeError: 'gbk' codec can't encode character '\xe4' in position 220377: illegal multibyte sequence
+
+Check (logs\run_evaluation\dd-coder-e89687fc\dd-coder-deepseek-flash\pallets__flask-4045\run_instance.log) for more information.
+2026-10-18 17:08:56,280 - INFO - Attempting to stop container sweb.eval.pallets__flask-4045.dd-coder-e89687fc...
+2026-10-18 17:09:11,629 - INFO - Container sweb.eval.pallets__flask-4045.dd-coder-e89687fc stopped successfully.
+2026-10-18 17:09:11,630 - INFO - Attempting to remove container sweb.eval.pallets__flask-4045.dd-coder-e89687fc...
+2026-10-18 17:09:11,754 - INFO - Container sweb.eval.pallets__flask-4045.dd-coder-e89687fc removed successfully.

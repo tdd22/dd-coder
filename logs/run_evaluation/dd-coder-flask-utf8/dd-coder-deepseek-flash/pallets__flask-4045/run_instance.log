@@ -1,0 +1,211 @@
+2026-10-18 17:11:05,184 - INFO - Creating container for pallets__flask-4045...
+2026-10-18 17:11:05,343 - INFO - Container for pallets__flask-4045 created: e27ef5a0273ac85b646805c9d8383204dbfd650426b14b137b0f4a2116b1a42b
+2026-10-18 17:11:06,223 - INFO - Container for pallets__flask-4045 started: e27ef5a0273ac85b646805c9d8383204dbfd650426b14b137b0f4a2116b1a42b
+2026-10-18 17:11:06,225 - INFO - Intermediate patch for pallets__flask-4045 written to logs\run_evaluation\dd-coder-flask-utf8\dd-coder-deepseek-flash\pallets__flask-4045\patch.diff, now applying to container...
+2026-10-18 17:11:06,625 - INFO - >>>>> Applied Patch:
+Checking patch src/flask/blueprints.py...
+warning: src/flask/blueprints.py has type 100755, expected 100644
+Applied patch src/flask/blueprints.py cleanly.
+
+2026-10-18 17:11:07,269 - INFO - Git diff before:
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index 5fb84d86..bcb0e0fa 100755
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -150,6 +150,10 @@ class Blueprint(Scaffold):
+         automatic detection can fail, so the path can be specified
+         manually instead.
+ 
++    .. versionchanged:: 2.0.1
++        The ``name`` parameter may not contain a dot. Dots are used as
++        separators in endpoint names for nested blueprints.
++
+     .. versionchanged:: 1.1.0
+         Blueprints have a ``cli`` group to register nested CLI commands.
+         The ``cli_group`` parameter controls the name of the group under
+@@ -188,6 +192,13 @@ class Blueprint(Scaffold):
+             template_folder=template_folder,
+             root_path=root_path,
+         )
++
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
++        if "." in name:
++            raise ValueError("'name' may not contain a dot '.' character.")
++
+         self.name = name
+         self.url_prefix = url_prefix
+         self.subdomain = subdomain
+@@ -250,6 +261,8 @@ class Blueprint(Scaffold):
+ 
+         .. versionadded:: 2.0
+         """
++        if blueprint is self:
++            raise ValueError("Cannot register a blueprint on itself")
+         self._blueprints.append((blueprint, options))
+ 
+     def register(self, app: "Flask", options: dict) -> None:
+@@ -261,7 +274,7 @@ class Blueprint(Scaffold):
+         :param app: The application this blueprint is being registered
+             with.
+         :param options: Keyword arguments forwarded from
+-            :meth:`~Flask.register_blueprint`.
++            :meth:`~flask.Flask.register_blueprint`.
+         :param first_registration: Whether this is the first time this
+             blueprint has been registered on the application.
+         """
+@@ -340,14 +353,22 @@ class Blueprint(Scaffold):
+                 app.cli.add_command(self.cli)
+ 
+         for blueprint, bp_options in self._blueprints:
+-            url_prefix = options.get("url_prefix", "")
+-            if "url_prefix" in bp_options:
+-                url_prefix = (
+-                    url_prefix.rstrip("/") + "/" + bp_options["url_prefix"].lstrip("/")
++            bp_options = bp_options.copy()
++            bp_url_prefix = bp_options.get("url_prefix")
++
++            if bp_url_prefix is None:
++                bp_url_prefix = blueprint.url_prefix
++
++            if state.url_prefix is not None and bp_url_prefix is not None:
++                bp_options["url_prefix"] = (
++                    state.url_prefix.rstrip("/") + "/" + bp_url_prefix.lstrip("/")
+                 )
++            elif bp_url_prefix is not None:
++                bp_options["url_prefix"] = bp_url_prefix
++            elif state.url_prefix is not None:
++                bp_options["url_prefix"] = state.url_prefix
+ 
+-            bp_options["url_prefix"] = url_prefix
+-            bp_options["name_prefix"] = options.get("name_prefix", "") + self.name + "."
++            bp_options["name_prefix"] = state.name_prefix + self.name + "."
+             blueprint.register(app, bp_options)
+ 
+     def add_url_rule(
+@@ -360,12 +381,12 @@ class Blueprint(Scaffold):
+         """Like :meth:`Flask.add_url_rule` but for a blueprint.  The endpoint for
+         the :func:`url_for` function is prefixed with the name of the blueprint.
+         """
+-        if endpoint:
+-            assert "." not in endpoint, "Blueprint endpoints should not contain dots"
+-        if view_func and hasattr(view_func, "__name__"):
+-            assert (
+-                "." not in view_func.__name__
+-            ), "Blueprint view function name should not contain dots"
++        if endpoint and "." in endpoint:
++            raise ValueError("Blueprint endpoints should not contain dots")
++
++        if view_func and hasattr(view_func, "__name__") and "." in view_func.__name__:
++            raise ValueError("Blueprint view function name should not contain dots")
++
+         self.record(lambda s: s.add_url_rule(rule, endpoint, view_func, **options))
+ 
+     def app_template_filter(self, name: t.Optional[str] = None) -> t.Callable:
+2026-10-18 17:11:07,271 - INFO - Eval script for pallets__flask-4045 written to logs\run_evaluation\dd-coder-flask-utf8\dd-coder-deepseek-flash\pallets__flask-4045\eval.sh; copying to container...
+2026-10-18 17:11:24,098 - INFO - Test runtime: 16.67 seconds
+2026-10-18 17:11:24,100 - INFO - Test output for pallets__flask-4045 written to logs\run_evaluation\dd-coder-flask-utf8\dd-coder-deepseek-flash\pallets__flask-4045\test_output.txt
+2026-10-18 17:11:24,201 - INFO - Git diff after:
+diff --git a/src/flask/blueprints.py b/src/flask/blueprints.py
+index 5fb84d86..bcb0e0fa 100755
+--- a/src/flask/blueprints.py
++++ b/src/flask/blueprints.py
+@@ -150,6 +150,10 @@ class Blueprint(Scaffold):
+         automatic detection can fail, so the path can be specified
+         manually instead.
+ 
++    .. versionchanged:: 2.0.1
++        The ``name`` parameter may not contain a dot. Dots are used as
++        separators in endpoint names for nested blueprints.
++
+     .. versionchanged:: 1.1.0
+         Blueprints have a ``cli`` group to register nested CLI commands.
+         The ``cli_group`` parameter controls the name of the group under
+@@ -188,6 +192,13 @@ class Blueprint(Scaffold):
+             template_folder=template_folder,
+             root_path=root_path,
+         )
++
++        if not name:
++            raise ValueError("'name' may not be empty.")
++
++        if "." in name:
++            raise ValueError("'name' may not contain a dot '.' character.")
++
+         self.name = name
+         self.url_prefix = url_prefix
+         self.subdomain = subdomain
+@@ -250,6 +261,8 @@ class Blueprint(Scaffold):
+ 
+         .. versionadded:: 2.0
+         """
++        if blueprint is self:
++            raise ValueError("Cannot register a blueprint on itself")
+         self._blueprints.append((blueprint, options))
+ 
+     def register(self, app: "Flask", options: dict) -> None:
+@@ -261,7 +274,7 @@ class Blueprint(Scaffold):
+         :param app: The application this blueprint is being registered
+             with.
+         :param options: Keyword arguments forwarded from
+-            :meth:`~Flask.register_blueprint`.
++            :meth:`~flask.Flask.register_blueprint`.
+         :param first_registration: Whether this is the first time this
+             blueprint has been registered on the application.
+         """
+@@ -340,14 +353,22 @@ class Blueprint(Scaffold):
+                 app.cli.add_command(self.cli)
+ 
+         for blueprint, bp_options in self._blueprints:
+-            url_prefix = options.get("url_prefix", "")
+-            if "url_prefix" in bp_options:
+-                url_prefix = (
+-                    url_prefix.rstrip("/") + "/" + bp_options["url_prefix"].lstrip("/")
++            bp_options = bp_options.copy()
++            bp_url_prefix = bp_options.get("url_prefix")
++
++            if bp_url_prefix is None:
++                bp_url_prefix = blueprint.url_prefix
++
++            if state.url_prefix is not None and bp_url_prefix is not None:
++                bp_options["url_prefix"] = (
++                    state.url_prefix.rstrip("/") + "/" + bp_url_prefix.lstrip("/")
+                 )
++            elif bp_url_prefix is not None:
++                bp_options["url_prefix"] = bp_url_prefix
++            elif state.url_prefix is not None:
++                bp_options["url_prefix"] = state.url_prefix
+ 
+-            bp_options["url_prefix"] = url_prefix
+-            bp_options["name_prefix"] = options.get("name_prefix", "") + self.name + "."
++            bp_options["name_prefix"] = state.name_prefix + self.name + "."
+             blueprint.register(app, bp_options)
+ 
+     def add_url_rule(
+@@ -360,12 +381,12 @@ class Blueprint(Scaffold):
+         """Like :meth:`Flask.add_url_rule` but for a blueprint.  The endpoint for
+         the :func:`url_for` function is prefixed with the name of the blueprint.
+         """
+-        if endpoint:
+-            assert "." not in endpoint, "Blueprint endpoints should not contain dots"
+-        if view_func and hasattr(view_func, "__name__"):
+-            assert (
+-                "." not in view_func.__name__
+-            ), "Blueprint view function name should not contain dots"
++        if endpoint and "." in endpoint:
++            raise ValueError("Blueprint endpoints should not contain dots")
++
++        if view_func and hasattr(view_func, "__name__") and "." in view_func.__name__:
++            raise ValueError("Blueprint view function name should not contain dots")
++
+         self.record(lambda s: s.add_url_rule(rule, endpoint, view_func, **options))
+ 
+     def app_template_filter(self, name: t.Optional[str] = None) -> t.Callable:
+2026-10-18 17:11:24,201 - INFO - Grading answer for pallets__flask-4045...
+2026-10-18 17:11:24,235 - INFO - report: {'pallets__flask-4045': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'infra_failure': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_blueprints.py::test_dotted_name_not_allowed', 'tests/test_blueprints.py::test_route_decorator_custom_endpoint_with_dots'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_basic.py::test_method_route_no_methods', 'tests/test_basic.py::test_disallow_string_for_allowed_methods', 'tests/test_basic.py::test_error_handler_unknown_code', 'tests/test_basic.py::test_request_locals', 'tests/test_basic.py::test_exception_propagation', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-True-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-True-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-True-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-True-False-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-False-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-False-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-False-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[None-False-False-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-True-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-True-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-True-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-True-False-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-False-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-False-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-False-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[True-False-False-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-True-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-True-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-True-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-True-False-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-False-True-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-False-True-False]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-False-False-True]', 'tests/test_basic.py::test_werkzeug_passthrough_errors[False-False-False-False]', 'tests/test_basic.py::test_get_method_on_g', 'tests/test_basic.py::test_g_iteration_protocol', 'tests/test_basic.py::test_run_defaults', 'tests/test_basic.py::test_run_server_port', 'tests/test_basic.py::test_run_from_config[None-None-pocoo.org:8080-pocoo.org-8080]', 'tests/test_basic.py::test_run_from_config[localhost-None-pocoo.org:8080-localhost-8080]', 'tests/test_basic.py::test_run_from_config[None-80-pocoo.org:8080-pocoo.org-80]', 'tests/test_basic.py::test_run_from_config[localhost-80-pocoo.org:8080-localhost-80]', 'tests/test_basic.py::test_run_from_config[localhost-0-localhost:8080-localhost-0]', 'tests/test_basic.py::test_run_from_config[None-None-localhost:8080-localhost-8080]', 'tests/test_basic.py::test_run_from_config[None-None-localhost:0-localhost-0]', 'tests/test_basic.py::test_app_freed_on_zero_refcount', 'tests/test_blueprints.py::test_template_filter', 'tests/test_blueprints.py::test_add_template_filter', 'tests/test_blueprints.py::test_template_filter_with_name', 'tests/test_blueprints.py::test_add_template_filter_with_name', 'tests/test_blueprints.py::test_template_test', 'tests/test_blueprints.py::test_add_template_test', 'tests/test_blueprints.py::test_template_test_with_name', 'tests/test_blueprints.py::test_add_template_test_with_name', 'tests/test_blueprints.py::test_template_global'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pallets__flask-4045: resolved: True
+2026-10-18 17:11:24,237 - INFO - Attempting to stop container sweb.eval.pallets__flask-4045.dd-coder-flask-utf8...
+2026-10-18 17:11:39,559 - INFO - Container sweb.eval.pallets__flask-4045.dd-coder-flask-utf8 stopped successfully.
+2026-10-18 17:11:39,560 - INFO - Attempting to remove container sweb.eval.pallets__flask-4045.dd-coder-flask-utf8...
+2026-10-18 17:11:39,672 - INFO - Container sweb.eval.pallets__flask-4045.dd-coder-flask-utf8 removed successfully.

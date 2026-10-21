@@ -35,6 +35,8 @@ htmlcov/
 .ruff_cache/
 .pytype/
 data/
+benchmark/workspaces/
+benchmark/outputs/
 # Jupyter
 .ipynb_checkpoints/
 

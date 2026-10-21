@@ -148,7 +148,9 @@ class ToolRegistry:
     # search 接收当前会话已加载过的名字，返回两样东西，给模型看的文字，以及更新后的名字集合。
     # block返回给模型告诉搜索arguments里面工具的结果，updated返回更新后的结果集合
     # 只有出现在updated里的工具才会被defer_execute执行
-    def search(self, loaded: set[str], arguments: Any) -> tuple[str, set[str]]:
+    def search(self, loaded: set[str], arguments: Any, loaded_skills: list | None = None) -> tuple[str, set[str]]:
+        from agent.connectors import MANAGER
+        MANAGER.ensure()
         error = validate_arguments(
             {
                 "type": "object",
@@ -174,7 +176,7 @@ class ToolRegistry:
                     continue
                 seen.add(name)
                 spec = self._specs.get(name)
-                if spec is None or not spec.deferred:
+                if spec is None or not spec.deferred or not _visible(spec, loaded_skills):
                     missing.append(name)
                 else:
                     found.append(spec)
@@ -182,7 +184,7 @@ class ToolRegistry:
             words = query.lower().split()
             scored = []
             for spec in self._specs.values():
-                if not spec.deferred:
+                if not spec.deferred or not _visible(spec, loaded_skills):
                     continue
                 text = f"{spec.name} {spec.description}".lower()
                 score = sum(1 for word in words if word in text)
@@ -209,7 +211,7 @@ class ToolRegistry:
     # defferred_tools的专用的执行入口
     # 只有检验通过了才会交给dispatch处理
     # 检验错误会被当作工具信息返回给agent
-    def execute_deferred(self, workspace: Path, loaded: set[str], arguments: Any,approver=None) -> str:
+    def execute_deferred(self, workspace: Path, loaded: set[str], arguments: Any,approver=None, loaded_skills: list | None = None) -> str:
         error = validate_arguments(
             {
                 "type": "object",
@@ -234,30 +236,49 @@ class ToolRegistry:
             return f"{name} 可以直接调用，不要使用 defer_execute"
         if name not in loaded:
             return f"请先使用 tool_search 加载 {name}"
-        return self.dispatch(workspace, name, tool_arguments, approver=approver)
+        return self.dispatch(
+            workspace,
+            name,
+            tool_arguments,
+            approver=approver,
+            loaded_skills=loaded_skills,
+        )
 
 
     # search和defer_execute不会使用hanler执行，而是在dispatch里面被接走执行对应的函数工具
     # 因为handler只能看workspace和参数，看不到会话已经加载的名单，但是dispatch里面有，他的层级更高
     # 所以把这个两个工具执行放在这里，正常执行走不进handler里面。
-    def dispatch(self, workspace: Path, name: str, arguments: Any,loaded:set[str]|None=None,approver=None) -> str:
+    def dispatch(self, workspace: Path, name: str, arguments: Any,loaded:set[str]|None=None,approver=None, loaded_skills: list | None = None) -> str:
         if name == "tool_search":
             if loaded is None:
                 return "内部错误: 缺少已加载名单"
-            text, updated = self.search(loaded, arguments)
+            text, updated = self.search(loaded, arguments, loaded_skills)
             loaded.clear()
             loaded.update(updated)
             return text
         if name == "defer_execute":
             if loaded is None:
                 return "内部错误: 缺少已加载名单"
-            return self.execute_deferred(workspace, loaded, arguments,approver)
+            return self.execute_deferred(workspace, loaded, arguments, approver, loaded_skills)
+        if name == "skill":
+            spec = self._specs.get("skill")
+            error = validate_arguments(spec.parameters, arguments) if spec is not None else "未知工具"
+            if error:
+                return f"参数不正确: {error}"
+            if loaded_skills is None:
+                return "内部错误: 缺少已加载技能"
+            from agent.skills import load_skill
+            text = load_skill(workspace, arguments["name"], loaded_skills)
+            return text
         spec = self._specs.get(name)
         if spec is None:
             return f"未知工具: {name}"
         error = validate_arguments(spec.parameters, arguments)
         if error:
             return f"参数不正确: {error}"
+        blocked = _access_block(name, arguments, loaded_skills)
+        if blocked:
+            return blocked
         blocked = execution_block(workspace, name, arguments,approver or console_approver)
         if blocked:
             return blocked
@@ -266,10 +287,10 @@ class ToolRegistry:
         except (SystemExit, Exception) as exc:
             return f"工具执行失败: {exc}"
     
-    def dispatch_many(self, workspace: Path, calls: list[tuple[str, Any]],loaded:set[str] | None = None,approver=None) -> list[str]:
+    def dispatch_many(self, workspace: Path, calls: list[tuple[str, Any]],loaded:set[str] | None = None,approver=None, loaded_skills: list | None = None) -> list[str]:
         def run_one(call: tuple[str, Any]) -> str:
             name, arguments = call
-            return self.dispatch(workspace, name, arguments,loaded,approver)
+            return self.dispatch(workspace, name, arguments, loaded, approver, loaded_skills)
 
         specs = [self._specs.get(name) for name, arguments in calls]
         can_run_concurrently = len(calls) > 1 and all(
@@ -290,6 +311,17 @@ def _handle_list_dir(workspace: Path, arguments: dict) -> str:
 
 def _handle_read_file(workspace: Path, arguments: dict) -> str:
     return read_file(workspace, arguments["relative"])
+
+
+# 读的是 data/tool-results/ 里的外部化产物，不在工作区内，
+# 所以 handler 不用 workspace，路径边界由 read_artifact 自己检查。
+def _handle_read_artifact(workspace: Path, arguments: dict) -> str:
+    from agent.tool_results import read_artifact
+    return read_artifact(
+        arguments["path"],
+        offset=arguments.get("offset", 0),
+        limit=arguments.get("limit", 500),
+    )
 
 
 def _handle_write_file(workspace: Path, arguments: dict) -> str:
@@ -329,6 +361,21 @@ REGISTRY.register(ToolSpec(
         "required": ["relative"],
     },
     handler=_handle_read_file,
+    concurrent_safe=True,
+))
+REGISTRY.register(ToolSpec(
+    name="read_artifact",
+    description="按行段读取被外部化到磁盘的完整工具结果。工具结果过大时，上下文里只有预览和文件路径，用这个工具读回细节。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "指针里给出的结果文件路径"},
+            "offset": {"type": "integer", "minimum": 0, "description": "从第几行开始，0 起，默认 0"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "最多读多少行，默认 500"},
+        },
+        "required": ["path"],
+    },
+    handler=_handle_read_artifact,
     concurrent_safe=True,
 ))
 REGISTRY.register(ToolSpec(
@@ -518,9 +565,75 @@ REGISTRY.register(ToolSpec(
 ))
 
 
+def _visible(spec: ToolSpec, loaded_skills: list | None) -> bool:
+    from agent.connectors import MANAGER
+    from agent.skills import mcp_declared
+    from agent.skills import tool_declared
+    if spec.name.startswith("mcp__"):
+        parts = spec.name.split("__")
+        server = parts[1] if len(parts) >= 3 else ""
+        return MANAGER.trusted(server) and MANAGER.connected(server) and mcp_declared(loaded_skills or [], spec.name)
+    return tool_declared(loaded_skills or [], spec.name)
+
+
+def _access_block(name: str, arguments: object, loaded_skills: list | None) -> str | None:
+    from agent.connectors import MANAGER
+    from agent.skills import grant_block
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        server = parts[1] if len(parts) >= 3 else ""
+        if not MANAGER.trusted(server):
+            return f"未执行: 连接器 {server} 未信任"
+        if not MANAGER.connected(server):
+            return f"未执行: 连接器 {server} 未连接"
+    return grant_block(loaded_skills or [], name, arguments)
+
+
+def deferred_catalog(loaded_skills: list | None = None) -> str:
+    from agent.connectors import MANAGER
+    MANAGER.ensure()
+    skills = loaded_skills or []
+    builtin = []
+    external = []
+    for spec in REGISTRY._specs.values():
+        if not spec.deferred or not _visible(spec, skills):
+            continue
+        line = f"{spec.name}: {spec.description}"
+        if spec.name.startswith("mcp__"):
+            external.append(line)
+        else:
+            builtin.append(line)
+    lines = ["可搜索的延迟工具:", *sorted(builtin)]
+    omitted = 0
+    for line in sorted(external):
+        if len("\n".join(lines + [line])) > 2000:
+            omitted += 1
+            continue
+        lines.append(line)
+    if omitted:
+        lines.append(f"还有 {omitted} 个外部工具未列入，用 tool_search 的 query 查找")
+    return "\n".join(lines)
+
+
+def _handle_skill(workspace: Path, arguments: dict) -> str:
+    return "请通过 dispatch 携带已加载技能调用 skill"
+
+
+REGISTRY.register(ToolSpec(
+    name="skill",
+    description="按名字加载一份技能的完整步骤。系统提示里只有目录时调用它。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "技能目录里的名字"},
+        },
+        "required": ["name"],
+    },
+    handler=_handle_skill,
+))
 REGISTRY.register(ToolSpec(
     name="tool_search",
-    description="搜索后才能执行的工具。目录：\n" + REGISTRY.directory() + "\n用 names 精确查找，或用 query 按关键词查找。看到完整参数后再调用 defer_execute。",
+    description="搜索后才能执行的延迟工具。名字见系统提示里的延迟工具名单。用 names 精确查找，或用 query 按关键词查找。看到完整参数后再调用 defer_execute。",
     parameters={
         "type": "object",
         "properties": {

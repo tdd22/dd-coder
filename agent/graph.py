@@ -6,12 +6,18 @@ from agent.llm import complete
 from agent.llm import chat
 from agent.llm import complete_text
 from agent.llm import complete_json
+from agent.llm import traced_turn
+from agent.skills import catalog_text
+from agent.skills import skill_body_text
 from agent.tool import REGISTRY
+from agent.tool import deferred_catalog
 import json
+import os
 import sqlite3
 from pathlib import Path
 from enum import Enum
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, interrupt
 
 from agent.routing import route_task
@@ -27,6 +33,14 @@ from agent.pending import (
     proposals_from_verify,
     render_pending_context,
 )
+from agent.prompt_assembly import (
+    base_segment,
+    optional_segment,
+    plan_prompt,
+    tools_budget_segment,
+)
+from agent.context_compact import assert_request_budget, compact_context
+from agent.tool_results import make_pointer, should_externalize, write_artifact
 
 
 class LoopStopReason(str,Enum):
@@ -36,7 +50,7 @@ class LoopStopReason(str,Enum):
 
 
 
-MAX_TURNS=8
+MAX_TURNS=30
 
 class State(TypedDict):
     turns:int
@@ -44,6 +58,7 @@ class State(TypedDict):
     provider_finish_reason:str|None
     messages:list
     loaded_tools:list
+    loaded_skills:list
     model_tier:str|None
     model_name:str|None
     pending_items:list
@@ -53,8 +68,8 @@ class State(TypedDict):
     current_user_recorded_at:str|None
     turn_message_start:int
 
-# loaded_tools、pending_items、processed_pending_source_ids 要留到下一次提问，
-# 所以 run_chat 里 graph.invoke 的那个字典不要加这三个字段。
+# loaded_tools、loaded_skills、pending_items、processed_pending_source_ids 要留到下一次提问，
+# 所以 run_chat 里 graph.invoke 的那个字典不要加这四个字段。
 # pending_completion_proposals 每次新的用户消息重置为空。
 def stop_reason_for(has_tool_calls:bool,finish_reason:str|None):
     if has_tool_calls:
@@ -62,29 +77,67 @@ def stop_reason_for(has_tool_calls:bool,finish_reason:str|None):
     if finish_reason=="length":
         return LoopStopReason.MAX_TOKENS
     return LoopStopReason.FINAL_ANSWER
-TOOLS = REGISTRY.openai_tools()
+def _summarize_old_messages(old_messages_json: str) -> str:
+    settings = load_config()
+    routed = route_task(settings, "context_summary")
+    prompt = (
+        "总结下面的旧对话。保留用户意图、已经做过的操作和还没做完的事。"
+        "不要判断未决任务是否完成。\n"
+        f"{old_messages_json}"
+    )
+    return complete_text({**settings, "model": routed.model}, prompt, max_tokens=800)
+
+
+def _pending_budget_priority(items: list) -> int:
+    if any(item.get("status") in {"open", "blocked"} for item in items):
+        return 30
+    return 15
 
 
 def agent_node(state:State)->dict:
     settings=load_config()
     route=route_task(settings,"agent")
     routed={**settings,"model":route.model}
-    messages=state["messages"]
     user_context=UserMemory().get_context_for_agent()
     workspace_context=WorkspaceMemory(settings["workspace"]).get_context_for_agent()
-    pending_context=render_pending_context(state.get("pending_items") or [])
-    prefix=[]
-    if user_context:
-        prefix.append({"role":"system","content":user_context})
-    if workspace_context:
-        prefix.append({"role":"system","content":workspace_context})
-    if pending_context:
-        prefix.append({"role":"system","content":pending_context})
-    if prefix:
-        messages=prefix+messages
-    # 在这里和模型进行交互
-    # 这段文字只放进这一次chat参数，写回状态仍用state["messages"]
-    message ,finish_reason = chat(routed, messages, TOOLS)
+    pending_items = state.get("pending_items") or []
+    pending_context=render_pending_context(pending_items)
+    loaded_skills = state.get("loaded_skills") or []
+    tools = REGISTRY.openai_tools()
+    segments = [base_segment(), tools_budget_segment(tools)]
+    for name, content, priority, budget_priority in (
+        ("user_memory", user_context, 20, 20),
+        ("skills", catalog_text(settings["workspace"]), 22, 25),
+        ("skill_body", skill_body_text(loaded_skills), 23, 80),
+        ("deferred_tools", deferred_catalog(loaded_skills), 24, 40),
+        ("workspace_memory", workspace_context, 30, 10),
+        ("pending", pending_context, 40, _pending_budget_priority(pending_items)),
+    ):
+        segment = optional_segment(
+            name,
+            content,
+            priority=priority,
+            budget_priority=budget_priority,
+        )
+        if segment is not None:
+            segments.append(segment)
+    plan = plan_prompt(segments)
+    if any(item.name == "skill_body" and item.status == "rejected" for item in plan.decisions):
+        segments = [segment for segment in segments if segment.name != "skill_body"]
+        note = optional_segment(
+            "skill_body",
+            "已加载但超出预算，正文未注入",
+            priority=23,
+            budget_priority=80,
+        )
+        if note is not None:
+            segments.append(note)
+        plan = plan_prompt(segments)
+    system_messages = list(plan.system_messages)
+    # system 和压缩副本只进入这一次 chat，不写回 checkpoint。
+    working = compact_context(state["messages"], summarizer=_summarize_old_messages).messages
+    assert_request_budget(system_messages, working, tools)
+    message ,finish_reason = chat(routed, system_messages + working, tools)
 
     assistant = {"role": "assistant", "content": message.content or ""}
     if message.tool_calls:
@@ -117,9 +170,16 @@ def page_approver(decision):
     })
     return bool(approved)
 
-def tools_node(state: State) -> dict:
+def current_approver(decision):
+    if os.getenv("DD_CODER_AUTO_ALLOW", "").strip() == "1":
+        return True
+    return page_approver(decision)
+
+def tools_node(state: State, config: RunnableConfig | None = None) -> dict:
     settings = load_config()
     workspace = settings["workspace"]
+    # 产物目录按会话分。main.py 这条路没有 thread_id，落到 default。
+    thread_id = ((config or {}).get("configurable") or {}).get("thread_id") or "default"
     last = state["messages"][-1]
     calls = []
     ids = []
@@ -134,15 +194,29 @@ def tools_node(state: State) -> dict:
         calls.append((name, arguments))
         ids.append(call["id"])
     loaded = set(state.get("loaded_tools") or [])
-    results = REGISTRY.dispatch_many(workspace, calls,loaded,page_approver)
+    loaded_skills = list(state.get("loaded_skills") or [])
+    results = REGISTRY.dispatch_many(workspace, calls, loaded, current_approver, loaded_skills)
     tool_messages = []
-    for tool_id, result in zip(ids, results):
+    for tool_id, (name, _arguments), result in zip(ids, calls, results):
+        # 替换发生在写回 messages 之前：checkpoint、之后每一轮、Transcript
+        # 看到的都是指针，完整原文只在 data/tool-results/ 的产物文件里。
+        content = result
+        if should_externalize(name, result):
+            try:
+                artifact = write_artifact(thread_id, result)
+            except OSError as exc:
+                # 磁盘写不进去时按原文放行，不丢掉这次结果。
+                print(f"externalize skipped: {exc}")
+            else:
+                content = make_pointer(name, result, artifact)
+                print(f"externalize: {name} {len(result)} 字符 -> {artifact}")
         tool_messages.append(
-            {"role": "tool", "tool_call_id": tool_id, "content": result}
+            {"role": "tool", "tool_call_id": tool_id, "content": content}
         )
 
     update={"messages": state["messages"] + tool_messages,
              "loaded_tools": sorted(loaded),
+             "loaded_skills": loaded_skills,
     }
     if state.get("turns", 0) >= MAX_TURNS:
         update["stop_reason"]=LoopStopReason.MAX_TURNS.value
@@ -393,6 +467,11 @@ def write_title_if_absent(thread_id: str) -> None:
     transcript.append({"type": "ai-title", "title": title})
 
 def run_chat(user_message: str,thread_id:str=THREAD_ID) -> dict:
+    with traced_turn(thread_id, "run_chat"):
+        return _run_chat(user_message, thread_id)
+
+
+def _run_chat(user_message: str, thread_id: str) -> dict:
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id},
       "recursion_limit": MAX_TURNS * 2 + 5,}
@@ -451,6 +530,11 @@ def run_chat(user_message: str,thread_id:str=THREAD_ID) -> dict:
         "pending":pending
     }
 def resume_chat(approved: bool,thread_id:str=THREAD_ID) -> dict:
+    with traced_turn(thread_id, "resume_chat"):
+        return _resume_chat(approved, thread_id)
+
+
+def _resume_chat(approved: bool, thread_id: str) -> dict:
     graph = get_graph()
     config = {"configurable": {"thread_id": thread_id},
       "recursion_limit": MAX_TURNS * 2 + 5,}

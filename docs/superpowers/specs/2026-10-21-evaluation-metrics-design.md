@@ -12,7 +12,7 @@
 
 ## 范围
 
-首版只覆盖 SWE-bench Lite 自动修复任务，以官方 evaluator 作为修复正确性的唯一裁判。
+首版只覆盖 SWE-bench Lite `test` 集的前 50 题，顺序与 `SWE-bench/SWE-bench_Lite` 的发布顺序一致。清单固定在 `benchmark/swebench_lite_first50.txt`，基线和候选必须使用同一份。其余 250 题不进入首版比较。官方 evaluator 仍是修复正确性的唯一裁判。
 
 首版包含：
 

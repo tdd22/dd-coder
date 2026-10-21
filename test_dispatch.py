@@ -35,12 +35,19 @@ class DispatchTest(unittest.TestCase):
             results = REGISTRY.dispatch_many(root, [
                 ("write_file", {"relative": "hello.txt", "content": "done"}),
                 ("read_file", {"relative": "hello.txt"}),
-            ])
+            ], approver=lambda decision: True)
         self.assertEqual(results, ["已写入", "done"])
 
     def test_tool_names_come_from_the_registry(self):
         names = [item["function"]["name"] for item in REGISTRY.openai_tools()]
-        self.assertEqual(names, ["list_dir", "read_file", "tool_search", "defer_execute"])
+        self.assertEqual(names, [
+            "list_dir",
+            "read_file",
+            "read_artifact",
+            "skill",
+            "tool_search",
+            "defer_execute",
+        ])
 
     def test_read_only_batch_overlaps(self):
         order = []
@@ -118,6 +125,7 @@ class DispatchTest(unittest.TestCase):
                     }),
                 ],
                 loaded,
+                approver=lambda decision: True,
             )
             self.assertIn("新加载", results[0])
             self.assertEqual(results[1], "已写入")

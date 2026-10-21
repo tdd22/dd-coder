@@ -12,6 +12,7 @@ TASK_TIER = {
     "title": ModelTier.LITE,
     "pending_extract": ModelTier.LITE,
     "pending_verify": ModelTier.LITE,
+    "context_summary": ModelTier.LITE,
 }
 
 @dataclass(frozen=True)

@@ -75,7 +75,9 @@ def decide(workspace: Path, request: ToolRequest) -> PermissionDecision:
                 f"路径 {relative} 不在工作区内",
             )
 
-    if request.name in ("list_dir", "read_file", "tool_search"):
+    # read_artifact 读的是 data/tool-results/ 里的产物，路径边界由它的
+    # handler 检查；权限层只确认它是只读工具。
+    if request.name in ("list_dir", "read_file", "tool_search", "read_artifact", "skill"):
         return PermissionDecision(
             request,
             PermissionAction.ALLOW,
@@ -138,6 +140,13 @@ def decide(workspace: Path, request: ToolRequest) -> PermissionDecision:
             PermissionAction.ASK,
             "preference.forget_requires_approval",
             "写入会忘掉一条跨项目偏好，需要你同意",
+        )
+    if request.name.startswith("mcp__"):
+        return PermissionDecision(
+            request,
+            PermissionAction.ASK,
+            "mcp.requires_approval",
+            "外部工具可能有副作用，需要你同意",
         )
     return PermissionDecision(
     request,

@@ -4,3 +4,4 @@ fastapi
 uvicorn
 langgraph
 langgraph-checkpoint-sqlite
+langfuse

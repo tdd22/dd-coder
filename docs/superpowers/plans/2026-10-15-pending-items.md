@@ -29,8 +29,8 @@
 - Create: `agent/pending.py`
 - Test: `test_pending.py`
 
-- [ ] Add failing tests for create, block, open, done, rejected transitions, render limits, and evidence checks.
-- [ ] Implement pure pending functions and rerun `python -m unittest test_pending.py`.
+- [x] Add failing tests for create, block, open, done, rejected transitions, render limits, and evidence checks.
+- [x] Implement pure pending functions and rerun `python -m unittest test_pending.py`.
 
 ### Task 2: Graph and transcript integration
 
@@ -43,7 +43,7 @@
 - Test: `test_pending.py`
 - Test: `test_stop.py`
 
-- [ ] Return transcript envelopes and record tool-result IDs.
-- [ ] Add lite routes, JSON completion, both graph nodes, prompt injection, and post-run completion commit.
-- [ ] Prove one extraction per user message, no extraction on resume, no model call without open items, and no `turns` or model-tier leakage.
-- [ ] Run `python -m unittest test_pending.py test_stop.py test_dispatch.py test_user_memory.py`.
+- [x] Return transcript envelopes and record tool-result IDs.
+- [x] Add lite routes, JSON completion, both graph nodes, prompt injection, and post-run completion commit.
+- [x] Prove one extraction per user message, no extraction on resume, no model call without open items, and no `turns` or model-tier leakage.
+- [x] Run `python -m unittest test_pending.py test_stop.py test_dispatch.py test_user_memory.py`.
